@@ -17,7 +17,7 @@ DATASET:
 #  CSV dataset
   NAME: 'CSV'
   ROOT: 'Datasets/CSV/video_compressed'
-  TXT_PATH: './Datasets/Elastic-Matching/elastic_pair_0.2.txt'
+  TXT_PATH: 'Datasets/Elastic-Matching/elastic_pair_0.4.txt'
   NUM_CLASS: 45
 
 #  COIN dataset
@@ -38,6 +38,6 @@ DATASET:
   NUM_CLIP: 16
   AUGMENT: False
   SHUFFLE: True
-  NUM_WORKERS: 8
+  NUM_WORKERS: 16
 
 

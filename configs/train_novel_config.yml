@@ -6,7 +6,7 @@ TRAIN:
   DROPOUT: 0.0
   SEED: 1234
 
-  SAVE_PATH: 'train_logs/csv_logs/ablation_step_12'
+  SAVE_PATH: 'train_logs/csv_logs/train_align_cls'
 
 MODEL:
   BACKBONE: 'cat'

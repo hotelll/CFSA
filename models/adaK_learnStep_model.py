@@ -118,7 +118,7 @@ class Align_adaK_learnStep(nn.Module):
             seg2_list = []
             i, j, a, b = T-1, T-1, T-1, T-1 
             # k = step_num[batch].item()
-            k = 13
+            k = 
             
             step_list1 = []
             step_list2 = []

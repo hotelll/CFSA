@@ -70,25 +70,24 @@ def train():
             pred1, seq_features1 = model(frames1)
             pred2, seq_features2 = model(frames2)
             loss_cls = compute_cls_loss(pred1, labels1) + compute_cls_loss(pred2, labels2)
-            loss_step, frame_seg1, frame_seg2 = consist_step_mining(seq_features1, seq_features2, 13)
-            loss_frame = frame_blank_align_loss(seq_features1, seq_features2, frame_seg2) \
-                        + frame_blank_align_loss(seq_features2, seq_features1, frame_seg1)
+            # loss_step, frame_seg1, frame_seg2 = consist_step_mining(seq_features1, seq_features2, 13)
+            # loss_frame = frame_blank_align_loss(seq_features1, seq_features2, frame_seg2) \
+            #             + frame_blank_align_loss(seq_features2, seq_features1, frame_seg1)
             
-            loss_cls = 0.5 * loss_cls
-            loss_frame = 0.5 * loss_frame
+            # loss_cls = 0.5 * loss_cls
+            # loss_frame = 0.5 * loss_frame
             
-            loss = loss_cls + loss_frame + loss_step
+            # loss = loss_frame + loss_step
+            loss = loss_cls
             
             if (iter + 1) % 10 == 0:
-                logger.info( 'Epoch [{}/{}], Step [{}/{}], Loss: {:.4f}, Frame Loss: {:.4f}, Step Loss: {:.4f}'.format(
+                logger.info( 'Epoch [{}/{}], Step [{}/{}], Loss: {:.4f}, CLS Loss: {:.4f}'.format(
                     epoch + 1, 
                     cfg.TRAIN.MAX_EPOCH, 
                     iter + 1, 
                     len(train_loader), 
                     loss.item(),
-                    loss_cls.item(),
-                    loss_frame.item(),
-                    loss_step.item()
+                    loss_cls.item()
                 )
             )
             

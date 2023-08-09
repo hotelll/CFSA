@@ -6,13 +6,9 @@ from torch.nn import CrossEntropyLoss
 import math
 
 def compute_cls_loss(pred, labels, use_cosface=False):
-
     if use_cosface:
         # CosFace Loss
-
-        s = 30.0
-        m = 0.4
-
+        s, m = 30.0, 0.4
         cos_value = torch.diagonal(pred.transpose(0, 1)[labels])
         numerator = s * (cos_value - m)
         excl = torch.cat([torch.cat((pred[i, :y], pred[i, y + 1:])).unsqueeze(0) for i, y in enumerate(labels)], dim=0)
@@ -21,10 +17,58 @@ def compute_cls_loss(pred, labels, use_cosface=False):
         loss = -torch.mean(L)
     else:
         # Softmax Loss
-
         criterion = CrossEntropyLoss().cuda()
         loss = criterion(pred, labels)
 
+    return loss
+
+
+def frame_blank_align_loss(seq_features1, seq_features2, step_num):
+    seq_features1 = seq_features1[:, 1:]
+    blank2 = seq_features2[:, :1]
+    seq_features2 = seq_features2[:, 1:]
+    (B, T, C), device = seq_features1.shape, seq_features1.device
+    
+    K = 2 * step_num + 1
+    sparse_seq_features2 = torch.cat((blank2, seq_features2[:, [5, 7, 8, 9, 11, 12, 13, 14], :]), dim=1)
+    pred = (torch.einsum('bic,bjc->bij', seq_features1, sparse_seq_features2) / math.sqrt(C)).log_softmax(-1)
+
+    D_pre = torch.full((B, K), fill_value=float('-99999999'), device=device)
+    D_pre[:, 0] = pred[:, 0, 0]
+    D_pre[:, 1] = pred[:, 0, 1]
+    
+    for t in range(1, T):
+        D_cur = torch.full((B, K), fill_value=float('-99999999'), device=device)
+        D_cur[:, 0] = D_pre[:, 0] + pred[:, t, 0]
+        D_cur[:, 1] = torch.logsumexp(torch.stack([D_pre[:, 0], D_pre[:, 1]]), dim=0) + pred[:, t, 1]
+        
+        # blank term
+        blank_pre_ind = torch.arange(1, K, 2)[None, :].repeat(B, 1)
+        blank_pre = D_pre[torch.arange(B, device=device).unsqueeze(-1), blank_pre_ind]
+        
+        blank_cur_ind = torch.arange(2, K, 2)[None, :].repeat(B, 1)
+        blank_cur = D_pre[torch.arange(B, device=device).unsqueeze(-1), blank_cur_ind]
+        
+        blank_log_prob = torch.logsumexp(torch.stack([blank_pre, blank_cur]), dim=0)
+        D_cur[:, 2:][:, ::2] = blank_log_prob + pred[:, t, 0][:, None].repeat(1, blank_log_prob.shape[-1])
+        
+        # step term
+        step_prepre_ind = torch.arange(1, K, 2)[None, :-1].repeat(B, 1)
+        step_prepre = D_pre[torch.arange(B, device=device).unsqueeze(-1), step_prepre_ind]
+        
+        step_pre_ind = torch.arange(2, K, 2)[None, :-1].repeat(B, 1)
+        step_pre = D_pre[torch.arange(B, device=device).unsqueeze(-1), step_pre_ind]
+        
+        step_cur_ind = torch.arange(3, K, 2)[None, :].repeat(B, 1)
+        step_cur = D_pre[torch.arange(B, device=device).unsqueeze(-1), step_cur_ind]
+        
+        step_log_prob = torch.logsumexp(torch.stack([step_prepre, step_pre, step_cur]), dim=0)
+        D_cur[:, 2:][:, 1::2] = step_log_prob + pred[:, t, 2:]
+        D_pre = D_cur
+
+    fsa_distance = -torch.logsumexp(D_cur[:, -2:], dim=-1) / 13
+    loss = fsa_distance.mean(0)
+    
     return loss
 
 

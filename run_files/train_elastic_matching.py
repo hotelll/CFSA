@@ -1,20 +1,19 @@
 import os
 import sys
+os.environ["CUDA_VISIBLE_DEVICES"] = "4,5"
 sys.path.append('/home/hty/CFSA')
-os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
 
 import torch
 import argparse
 import time
+
 from configs.defaults import get_cfg_defaults
 from data.dataset import load_dataset
 from utils.logger import setup_logger
 from models.align_blank_model import Align
 from utils.preprocess import frames_preprocess
 from utils.loss_origin import compute_cls_loss, frame_blank_align_loss, consist_step_mining
-from utils.dpm_decoder import *
 from utils.tools import setup_seed
-
 
 
 def train():
@@ -69,25 +68,26 @@ def train():
             
             pred1, seq_features1 = model(frames1)
             pred2, seq_features2 = model(frames2)
+            
             loss_cls = compute_cls_loss(pred1, labels1) + compute_cls_loss(pred2, labels2)
             loss_step, frame_seg1, frame_seg2 = consist_step_mining(seq_features1, seq_features2, 13)
             loss_frame = frame_blank_align_loss(seq_features1, seq_features2, frame_seg2) \
                         + frame_blank_align_loss(seq_features2, seq_features1, frame_seg1)
             
             loss_cls = 0.5 * loss_cls
-            loss_frame = 0.5 * loss_frame
+            loss_align = 0.5 * loss_align
             
-            loss = loss_cls + loss_frame + loss_step
+            loss = loss_cls + loss_align + loss_step
             
             if (iter + 1) % 10 == 0:
-                logger.info( 'Epoch [{}/{}], Step [{}/{}], Loss: {:.4f}, Frame Loss: {:.4f}, Step Loss: {:.4f}'.format(
+                logger.info( 'Epoch [{}/{}], Step [{}/{}], Loss: {:.4f}, Cls Loss: {:.4f}, Frame Loss: {:.4f}, Step Loss: {:.4f}'.format(
                     epoch + 1, 
                     cfg.TRAIN.MAX_EPOCH, 
                     iter + 1, 
                     len(train_loader), 
                     loss.item(),
                     loss_cls.item(),
-                    loss_frame.item(),
+                    loss_align.item(),
                     loss_step.item()
                 )
             )
@@ -144,9 +144,8 @@ def parse_args():
     parser.add_argument('--load_path', default=None, help='path to load the model')
     parser.add_argument('--log_name', default='train_log', help='log name')
 
-
     args = parser.parse_args([
-        '--config', 'configs/train_novel_config.yml'
+        '--config', 'configs/train_adaK_learnGaussStep_config.yml'
     ])
     return args
 

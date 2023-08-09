@@ -10,7 +10,8 @@
             "request": "launch",
             "program": "${file}",
             "console": "integratedTerminal",
-            "justMyCode": true
+            "justMyCode": true,
+            "env": {"PYDEVD_WARN_SLOW_RESOLVE_TIMEOUT": "10"}
         }
     ]
 }

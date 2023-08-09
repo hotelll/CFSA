@@ -21,7 +21,6 @@ class ElasticMatchingDataset(data.Dataset):
                  dataset_name='CSV',
                  dataset_root=None,
                  txt_path=None,
-                 subclass_json=None,
                  normalization=None,
                  num_clip=16,
                  augment=True,
@@ -43,36 +42,52 @@ class ElasticMatchingDataset(data.Dataset):
             self.aug_color = True
             self.aug_rot = True
         self.num_sample = num_sample  # num of pairs randomly selected from all training pairs
-        self.data_list = [line.strip() for line in open(txt_path, 'r').readlines()]
-        # with open(subclass_json, 'r') as f:
-        #     subclass_dict = json.load(f)
-        # self.subclass_dict = subclass_dict
-
+        
+        self.data_list = []
+        task_data_list = os.listdir(txt_path)
+        for task in task_data_list:
+            task_list = []
+            task_txt = os.path.join(txt_path, task)
+            with open(task_txt, 'r') as f:
+                for line in f.readlines():
+                    task_info = {}
+                    video1, class1, video2, class2, pair_label, step_and_thres = line.strip().split(' ')
+                    step_num, step_thres = step_and_thres.split('/')
+                    task_info['video1'] = video1
+                    task_info['class1'] = class1
+                    task_info['video2'] = video2
+                    task_info['class2'] = class2
+                    task_info['pair_label'] = pair_label
+                    task_info['step_num'] = int(step_num)
+                    task_info['step_thres'] = int(step_thres)
+                    
+                    task_list.append(task_info)
+            
+            self.data_list.append(task_list)
+        
         logger.info('Successfully construct dataset with [%s] mode and [%d] samples randomly selected from [%d] samples' % (mode, len(self), len(self.data_list)))
 
 
     def __getitem__(self, index):
         data_path = self.data_list[index]
-        data_path_split = data_path.strip().split(' ')
-        query_video, query_label, candidate_video, candidate_label, pair_label, match_ratio = data_path.split(' ')
-        step_num = int(match_ratio.split('/')[0])
-        step_thres = int(match_ratio.split('/')[1])
-        
-        query_name = os.path.join(query_label, query_video)
-        candidate_name = os.path.join(candidate_label, candidate_video)
+        # data_path_split = data_path.strip().split(' ')
+
+        query_video = self.data_list[index][0]['video1']
+        query_class = self.data_list[index][0]['class1']
+        query_name = os.path.join(query_class, query_video)
+        query_clip = self.sample_clips_from_video(os.path.join(self.dataset_root, query_name))
         
         sample = {
-            'video_name1': query_video.split('.')[0],
-            'video_label1': query_label,
-            'video_name2': candidate_video.split('.')[0],
-            'video_label2': candidate_label,
-            'clips1': self.sample_clips_from_video(os.path.join(self.dataset_root, query_name)),
-            'clips2': self.sample_clips_from_video(os.path.join(self.dataset_root, candidate_name)),
-            'labels1': LABELS[self.dataset_name][self.mode].index(query_label) if self.mode == 'train' else query_label,
-            'labels2': LABELS[self.dataset_name][self.mode].index(candidate_label) if self.mode == 'train' else candidate_label,
-            'pair_label': pair_label,
-            'step_num': step_num,
-            'step_thres': step_thres
+            'query'
+        }
+        sample = {
+            # 'index': index,
+            'data': data_path,
+            'clips1': self.sample_clips_from_video(os.path.join(self.dataset_root, data_path_split[0])),
+            'clips2': self.sample_clips_from_video(os.path.join(self.dataset_root, data_path_split[2])),
+            'labels1': LABELS[self.dataset_name][self.mode].index(data_path_split[1]) if self.mode == 'train' else data_path_split[1],
+            'labels2': LABELS[self.dataset_name][self.mode].index(data_path_split[3]) if self.mode == 'train' else data_path_split[3],
+            'pair_info': data_path_split
         }
 
         return sample
@@ -83,12 +98,13 @@ class ElasticMatchingDataset(data.Dataset):
             return self.num_sample
         else:
             return len(self.data_list)
+        
 
-    def sample_clips_from_video(self, video_path):
-        vr = VideoReader(video_path)
+    def sample_clips_from_video(self, video_dir_path):        
+        vr = VideoReader(video_dir_path)
         segments = np.linspace(0, vr._num_frame - 2, self.num_clip + 1, dtype=int)
         sampled_clips = []
-        num_sampled_per_segment = 1 if self.mode == 'train' else 3
+        num_sampled_per_segment = 1
 
         for i in range(num_sampled_per_segment):
             sampled_frames = []
@@ -172,19 +188,17 @@ def load_dataset(cfg):
                                      dataset_name=cfg.DATASET.NAME,
                                      dataset_root=cfg.DATASET.ROOT,
                                      txt_path=cfg.DATASET.TXT_PATH,
-                                     subclass_json=cfg.DATASET.SUBCLASS_JSON,
                                      normalization=ImageNet_normalization,
                                      num_clip=cfg.DATASET.NUM_CLIP,
                                      augment=cfg.DATASET.AUGMENT,
-                                     num_sample=cfg.DATASET.NUM_SAMPLE,
-                                     load_video=cfg.DATASET.LOAD_VIDEO)
+                                     num_sample=cfg.DATASET.NUM_SAMPLE)
 
-    sampler = RandomSampler(dataset, cfg.DATASET.TXT_PATH, cfg.DATASET.SHUFFLE)
+    # sampler = RandomSampler(dataset, cfg.DATASET.TXT_PATH, cfg.DATASET.SHUFFLE)
 
     loaders = data.DataLoader(dataset=dataset,
                               batch_size=cfg.TRAIN.BATCH_SIZE,
                               shuffle=False,
-                              sampler=sampler,
+                              sampler=None,
                               drop_last=False,
                               num_workers=cfg.DATASET.NUM_WORKERS,
                               pin_memory=True)

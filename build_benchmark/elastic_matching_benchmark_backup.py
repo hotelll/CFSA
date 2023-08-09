@@ -4,10 +4,12 @@ from random import sample
 import math
 
 
-ELASTIC_RATIOS = [0.8, 0.6, 0.4]
-QUERY_NUM = 10
-SAMPLE_NUM = 10
+ELASTIC_RATIOS = [1.0, 0.8, 0.6, 0.4, 0.2]
+QUERY_NUM = 20
+SAMPLE_NUM = 100
 ROOT_PATH = 'Datasets/Elastic-Matching'
+
+
 
 
 def read_json(file_path):
@@ -95,42 +97,36 @@ def choose_queries():
 def get_elastic_pair(pair_match_step, candidate_videos, chosen_queries, elastic_ratio):
     label_bank_path = 'Datasets/CSV/label_bank.json'
     label_bank = read_json(label_bank_path)
-    elastic_matching_dict = {}
     
-    
-    elastic_txt_path = os.path.join(ROOT_PATH, 'elastic_pair_{}.txt'.format(elastic_ratio))
-    
-    with open(elastic_txt_path, 'w') as f:
-        for query in chosen_queries:
-            pos_num, neg_num, pos_list, neg_list = 0, 0, [], []
-            query_label, query_video = query.split('/')
-            query_key = '{}-{}'.format(query_label, query_video.split('.')[0])
-            query_step_num = len(label_bank[query_label])
-            elastic_step_thresh = math.ceil(query_step_num * elastic_ratio)
-            
-            candidate_dict = {}
+    elastic_dir = os.path.join(ROOT_PATH, 'elastic_pair_{}/'.format(elastic_ratio))
+    if not os.path.exists(elastic_dir):
+        os.makedirs(elastic_dir)
+        
+    for query in chosen_queries:
+        pos_num, neg_num, pos_list, neg_list = 0, 0, [], []
+        query_label, query_video = query.split('/')
+        query_name = '{}-{}.txt'.format(query_label, query_video.split('.')[0])
+        query_step_num = len(label_bank[query_label])
+        elastic_step_thresh = math.ceil(query_step_num * elastic_ratio)
+        elastic_pair_path = os.path.join(elastic_dir, query_name)
+        
+        with open(elastic_pair_path, 'w') as f:
             for candidate in candidate_videos:
                 candidate_label, candidate_video = candidate
-                candidate_key = '{}-{}'.format(candidate_label, candidate_video.split('.')[0])
+                consist_step_num = pair_match_step['{}-{}'.format(query_label, candidate_label)]
+                matched_label = (consist_step_num >= elastic_step_thresh)
                 
-                if query_label != candidate_label:
-                    consist_step_num = pair_match_step['{}-{}'.format(query_label, candidate_label)]
-                    matched_label = (consist_step_num >= elastic_step_thresh)
-                    
-                    if matched_label: # this is a positive pair
-                        sample_info = {'candidate_key': candidate_key,
-                                    'label': matched_label,
-                                    'step_num': query_step_num,
-                                    'step_thres': elastic_step_thresh}
-                        
-                        pos_list.append(sample_info)
-                    else: # this is a negative pair
-                        sample_info = {'candidate_key': candidate_key,
-                                    'label': matched_label,
-                                    'step_num': query_step_num,
-                                    'step_thres': elastic_step_thresh}
-                        neg_list.append(sample_info)
-
+                if matched_label: # this is a positive pair
+                    sample_info = '{} {} {} {} {} {}/{}\n'.format(query_video, query_label, 
+                                                                  candidate_video, candidate_label, 
+                                                                  matched_label, query_step_num, elastic_step_thresh)
+                    pos_list.append(sample_info)
+                else: # this is a negative pair
+                    sample_info = '{} {} {} {} {} {}/{}\n'.format(query_video, query_label, 
+                                                                  candidate_video, candidate_label, 
+                                                                  matched_label, query_step_num, elastic_step_thresh)
+                    neg_list.append(sample_info)
+            
             if len(pos_list) < SAMPLE_NUM // 2:
                 sampled_pos_list = pos_list
                 pos_num = len(pos_list)
@@ -140,26 +136,8 @@ def get_elastic_pair(pair_match_step, candidate_videos, chosen_queries, elastic_
             
             sampled_neg_list = sample(neg_list, SAMPLE_NUM - pos_num)
             sampled_list = sampled_pos_list + sampled_neg_list
-            
             for sample_info in sampled_list:
-                candidate_key = sample_info['candidate_key']
-                candidate_dict[candidate_key] = {'label': sample_info['label'],
-                                                'step_num': sample_info['step_num'],
-                                                'step_thres': sample_info['step_thres']}
-                candidate_label, candidate_video = candidate_key.split('-')
-                sample_info = '{} {} {} {} {} {}/{}\n'.format(query_video, query_label, 
-                                                              candidate_video + '.MP4', candidate_label, 
-                                                              sample_info['label'], sample_info['step_num'], 
-                                                              sample_info['step_thres'])
                 f.writelines(sample_info)
-        
-            elastic_matching_dict[query_key] = candidate_dict
-        
-        elastic_matching_str = json.dumps(elastic_matching_dict)
-        elastic_json_path = os.path.join(ROOT_PATH, 'elastic_pair_{}.json'.format(elastic_ratio))
-        with open(elastic_json_path, 'w') as json_file:
-            json_file.write(elastic_matching_str)
-    
     return
 
 
@@ -173,9 +151,7 @@ def get_all_elastic_pairs(elastic_ratio):
 
 
 if __name__ == '__main__':
-    if not os.path.exists(ROOT_PATH):
-        os.makedirs(ROOT_PATH)
-        
+    
     for elastic_ratio in ELASTIC_RATIOS:
         get_all_elastic_pairs(elastic_ratio)
     

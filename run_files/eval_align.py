@@ -1,28 +1,25 @@
+import os
+import sys
+sys.path.append('/home/hty/CFSA')
+os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
+
+import time
 import torch
 import torch.nn.functional as F
 import argparse
 import numpy as np
-import os
-import time
-import sys
-
-sys.path.append('/home/hty/SVIP')
-
 from tqdm import tqdm
 from sklearn.metrics import auc, roc_curve
 
 from configs.defaults import get_cfg_defaults
 from data.dataset import load_dataset
 from utils.logger import setup_logger
-from models.adaK_learnStep_model import Align
+from models.align_blank_model import Align
 from utils.preprocess import frames_preprocess
-from utils.loss import *
+from utils.loss_origin import frame_blank_align_distance, consist_step_mining
 from utils.tools import setup_seed
 import json
 from utils.dpm_decoder import *
-
-
-os.environ["CUDA_VISIBLE_DEVICES"] = "2,3"
 
 
 def read_json(file_path):
@@ -33,7 +30,6 @@ def read_json(file_path):
 
 def eval_one_model(model, dist='NormL2'):
     if torch.cuda.device_count() > 1 and torch.cuda.is_available():
-        # logger.info("Let's use %d GPUs" % torch.cuda.device_count())
         model = torch.nn.DataParallel(model)
 
     # auc metric
@@ -49,10 +45,7 @@ def eval_one_model(model, dist='NormL2'):
             labels1 = sample['labels1']
             labels2 = sample['labels2']
             label = torch.tensor(np.array(labels1) == np.array(labels2)).to(device)
-            
-            trend = 1 - label.float()
-            embeds1_list = []
-            embeds2_list = []
+
             frames1_feat_list = []
             frames2_feat_list = []
             
@@ -62,30 +55,16 @@ def eval_one_model(model, dist='NormL2'):
                 frame_emb1, frame_level1 = model(frames1)
                 frame_emb2, frame_level2 = model(frames2)
                 
-                embeds1_list.append(frame_emb1)
-                embeds2_list.append(frame_emb2)
                 frames1_feat_list.append(frame_level1)
                 frames2_feat_list.append(frame_level2)
-                
-            embeds1_avg = torch.stack(embeds1_list).mean(0)
-            embeds2_avg = torch.stack(embeds2_list).mean(0)
             
             frames1_feat_avg = torch.stack(frames1_feat_list).mean(0)
             frames2_feat_avg = torch.stack(frames2_feat_list).mean(0)
             
-            if dist == 'NormL2':
-                # L2 distance between normalized embeddings
-                pred = torch.sum((F.normalize(embeds1_avg, p=2, dim=1) - F.normalize(embeds2_avg, p=2, dim=1)) ** 2, dim=1)
-            
-            elif dist == 'align':
-                frame_pred = frame_align_distance(frames1_feat_avg, frames2_feat_avg) + frame_align_distance(frames2_feat_avg, frames1_feat_avg)
-                pred = 0.5 * frame_pred
-            
-            elif dist == 'cross':
-                video_seg1, video_seg2 = consist_step_mining_inference(frames1_feat_avg, frames2_feat_avg, 13)
-                frame_pred = frame2step_distance(frames1_feat_avg, frames2_feat_avg, video_seg2) + \
-                             frame2step_distance(frames2_feat_avg, frames1_feat_avg, video_seg1)
-                pred = frame_pred
+            _, video_seg1, video_seg2 = consist_step_mining(frames1_feat_avg, frames2_feat_avg, 13)
+            frame_pred = frame_blank_align_distance(frames1_feat_avg, frames2_feat_avg, video_seg2) + \
+                         frame_blank_align_distance(frames2_feat_avg, frames1_feat_avg, video_seg1)
+            pred = frame_pred
 
             if iter == 0:
                 preds = pred
@@ -220,10 +199,10 @@ def parse_args():
 
     args = parser.parse_args([
         '--config', 'configs/eval_novel_config.yml',
-        '--root_path', 'train_logs/csv_logs/ablation_step_12',
-        '--model_path', 'train_logs/csv_logs/ablation_step_12/best_model.tar',
+        '--root_path', 'train_logs/csv_logs/train_align_cls',
+        # '--model_path', 'train_logs/csv_logs/ablation_step_12/best_model.tar',
         '--dist', 'cross',
-        # '--start_epoch', '1'
+        '--start_epoch', '1'
     ])
 
     return args

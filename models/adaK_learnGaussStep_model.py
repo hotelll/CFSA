@@ -8,6 +8,8 @@ from utils.loss import frame2learnedstep_dist
 
 
 FIX_LEN = 3
+STEP_NUM = 13
+
 
 class Attention(nn.Module):
     def __init__(self, input_dim):
@@ -150,7 +152,7 @@ class Align_adaK_learnGaussStep(nn.Module):
             seg2_list = []
             i, j, a, b = T-1, T-1, T-1, T-1 
             # k = step_num[batch].item()
-            k = 13
+            k = STEP_NUM - 1
             
             step_list1 = []
             step_list2 = []

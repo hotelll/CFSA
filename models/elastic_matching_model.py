@@ -8,7 +8,6 @@ from utils.loss import frame2learnedstep_dist
 
 
 FIX_LEN = 3
-STEP_NUM = 13
 
 class Attention(nn.Module):
     def __init__(self, input_dim):
@@ -92,8 +91,8 @@ class Elastic_Matching_Model(nn.Module):
         self.dropout = nn.Dropout(dropout)
         self.cls_fc = nn.Linear(dim_size, num_class)
     
-    
-    def forward(self, x1, x2, embed=False, label=None):
+
+    def forward(self, x1, x2, embed=False, pair_label=None, step_num=10, step_thres=10):
         x1 = self.backbone(x1)
         x1 = self.bottleneck(x1)
         seq_features1 = self.get_token(x1)
@@ -146,14 +145,14 @@ class Elastic_Matching_Model(nn.Module):
         batched_step_list1 = []
         batched_step_list2 = []
         
-        step_value_matrix = torch.zeros((B, STEP_NUM), device=device)
-        
         for batch in range(B):
+            current_step_num = step_num[batch].item()
+            current_step_thres = step_thres[batch].item()
+            step_values = torch.zeros((current_step_num), device=device)
             seg1_list = []
             seg2_list = []
-            i, j, a, b = T-1, T-1, T-1, T-1 
-            # k = step_num[batch].item()
-            k = STEP_NUM - 1
+            i, j, a, b = T-1, T-1, T-1, T-1
+            k = current_step_num - 1
             
             step_list1 = []
             step_list2 = []
@@ -166,7 +165,7 @@ class Elastic_Matching_Model(nn.Module):
                 ind = D_ind[batch, k, i, j].item()
                 step_value = D_block[batch, k, i, j].item()
                 
-                step_value_matrix[batch, k] = step_value
+                step_values[k] = step_value
                 # step_average_list.append(step_value)
                 a = ind // T
                 b = ind % T
@@ -187,8 +186,8 @@ class Elastic_Matching_Model(nn.Module):
                 seg2_list.insert(0, b)
                 i, j, k = a, b, k-1
             
-            step_value_matrix[batch, 0] = D_block[batch, 0, i, j].item()
-            
+            step_values[0] = D_block[batch, 0, i, j].item()
+            selected_step_indices = step_values.topk(k=current_step_thres).indices.sort().values
             # step_value_tensor = torch.tensor(step_average_list).flip(dims=[0])
             
             video1_start = 0
@@ -203,14 +202,12 @@ class Elastic_Matching_Model(nn.Module):
             
             step_features1 = torch.stack(step_list1, dim=1)
             step_features2 = torch.stack(step_list2, dim=1)
-            seg_tensor1 = torch.tensor(seg1_list, device=device)
-            seg_tensor2 = torch.tensor(seg2_list, device=device)
             
-            batched_step_list1.append(step_features1[0])
-            batched_step_list2.append(step_features2[0])
+            selected_step_features1 = step_features1[:, selected_step_indices, :]
+            selected_step_features2 = step_features2[:, selected_step_indices, :]
             
-            batched_seg_list1.append(seg_tensor1)
-            batched_seg_list2.append(seg_tensor2)
+            batched_step_list1.append(selected_step_features1[0])
+            batched_step_list2.append(selected_step_features2[0])
         
         frame2step_dist = frame2learnedstep_dist(seq_features1, batched_step_list2) \
                             + frame2learnedstep_dist(seq_features2, batched_step_list1)

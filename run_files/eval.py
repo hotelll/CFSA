@@ -1,28 +1,26 @@
 import os
 import sys
-os.environ["CUDA_VISIBLE_DEVICES"] = "4"
 sys.path.append('/home/hty/CFSA')
+os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
 
+import time
 import torch
 import torch.nn.functional as F
 import argparse
 import numpy as np
-import time
-
-
 from tqdm import tqdm
+from sklearn.metrics import auc, roc_curve
 
 from configs.defaults import get_cfg_defaults
-from data.elastic_matching_dataset import load_dataset
+from data.dataset import load_dataset
 from utils.logger import setup_logger
-from models.elastic_matching_model import Elastic_Matching_Model
+from models.align_blank_model import Align
 from utils.preprocess import frames_preprocess
-from utils.loss import *
+from utils.loss_origin import frame_blank_align_distance, consist_step_mining
 from utils.tools import setup_seed
 import json
 from utils.dpm_decoder import *
 
-RATIO = 0.4
 
 def read_json(file_path):
         with open(file_path, 'r') as f:
@@ -30,19 +28,13 @@ def read_json(file_path):
         return data
 
 
-def eval_one_model(model):
+def eval_one_model(model, dist='NormL2'):
     if torch.cuda.device_count() > 1 and torch.cuda.is_available():
-        # logger.info("Let's use %d GPUs" % torch.cuda.device_count())
         model = torch.nn.DataParallel(model)
 
     # auc metric
     model.eval()
 
-    video1_list = []
-    video2_list = []
-    label1_list = []
-    label2_list = []
-    
     with torch.no_grad():
         for iter, sample in enumerate(tqdm(test_loader)):
             frames1_list = sample['clips1']
@@ -52,53 +44,93 @@ def eval_one_model(model):
 
             labels1 = sample['labels1']
             labels2 = sample['labels2']
-            pair_label = sample['pair_label']
-            step_num = sample['step_num']
-            step_thres = sample['step_thres']
-            
-            frame2step_dist_list = []
+            label = torch.tensor(np.array(labels1) == np.array(labels2)).to(device)
+
+            embeds1_list = []
+            embeds2_list = []
+            frames1_feat_list = []
+            frames2_feat_list = []
             
             for i in range(len(frames1_list)):
                 frames1 = frames_preprocess(frames1_list[i]).to(device, non_blocking=True)
                 frames2 = frames_preprocess(frames2_list[i]).to(device, non_blocking=True)
-                pred1, pred2, frame2step_dist, loss_step = model(frames1, frames2, False, pair_label, step_num, step_thres)
-
-                frame2step_dist_list.append(frame2step_dist)
+                frame_emb1, frame_level1 = model(frames1)
+                frame_emb2, frame_level2 = model(frames2)
                 
+                embeds1_list.append(frame_emb1)
+                embeds2_list.append(frame_emb2)
+                frames1_feat_list.append(frame_level1)
+                frames2_feat_list.append(frame_level2)
             
-            frame2step_dist_avg = torch.stack(frame2step_dist_list).mean(0)
-            pred = frame2step_dist_avg
+            embeds1_avg = torch.stack(embeds1_list).mean(0)
+            embeds2_avg = torch.stack(embeds2_list).mean(0)
             
-            video_names1 = sample['video_name1']
-            video_names2 = sample['video_name2']
-            video_labels1 = sample['video_label1']
-            video_labels2 = sample['video_label2']
+            frames1_feat_avg = torch.stack(frames1_feat_list).mean(0)
+            frames2_feat_avg = torch.stack(frames2_feat_list).mean(0)
             
-            video1_list += video_names1
-            video2_list += video_names2
-            label1_list += video_labels1
-            label2_list += video_labels2
-            
+            pred = torch.sum((F.normalize(embeds1_avg, p=2, dim=1) - F.normalize(embeds2_avg, p=2, dim=1)) ** 2, dim=1)
+
             if iter == 0:
                 preds = pred
+                labels = label
+                labels1_all = labels1
+                labels2_all = labels2
             else:
                 preds = torch.cat([preds, pred])
+                labels = torch.cat([labels, label])
+                labels1_all += labels1
+                labels2_all += labels2
+
+    fpr, tpr, thresholds = roc_curve(labels.cpu().detach().numpy(), preds.cpu().detach().numpy(), pos_label=0)
+    auc_value = auc(fpr, tpr)
+    wdr_value = compute_WDR(preds, labels1_all, labels2_all)
     
-    
-    with open('eval_logs/elastic_matching_{}_results.txt'.format(RATIO), 'w') as f:
-        for i in range(len(video1_list)):
-            line_to_write = "{} {} {} {} {}\n".format(video1_list[i], label1_list[i], video2_list[i], label2_list[i], preds[i].item())
-            f.writelines(line_to_write)
-        
-    return
+    return auc_value, wdr_value
+
+
+def compute_WDR(preds, labels1, labels2):
+    import json
+    def read_json(file_path):
+        with open(file_path, 'r') as f:
+            data = json.loads(f.read())
+        return data
+
+    def compute_edit_dist(seq1, seq2):
+        matrix = [[i + j for j in range(len(seq2) + 1)] for i in range(len(seq1) + 1)]
+        for i in range(1, len(seq1) + 1):
+            for j in range(1, len(seq2) + 1):
+                if (seq1[i - 1] == seq2[j - 1]):
+                    d = 0
+                else:
+                    d = 2
+                matrix[i][j] = min(matrix[i - 1][j] + 1, matrix[i][j - 1] + 1, matrix[i - 1][j - 1] + d)
+        return matrix[len(seq1)][len(seq2)]
+
+
+    # Load steps info for the corresponding dataset
+    label_bank_path = os.path.join('Datasets', cfg.DATASET.NAME, 'label_bank.json')
+    label_bank = read_json(label_bank_path)
+
+    # Calcualte wdr
+    labels = torch.tensor(np.array(labels1) == np.array(labels2))
+    m_dists = preds[labels]
+    um_dists = []
+    for i in range(labels.size(0)):
+        label = labels[i]
+        if not label: # only compute negative pairs
+            # unmatched pair
+            # NormL2 dist / edit distance
+            um_dists.append(preds[i] / compute_edit_dist(label_bank[labels1[i]], label_bank[labels2[i]]))
+
+    return torch.tensor(um_dists).mean() / m_dists.mean()
 
 
 def eval():
-    model = Elastic_Matching_Model(num_class=cfg.DATASET.NUM_CLASS,
-                                   dim_size=cfg.MODEL.DIM_EMBEDDING,
-                                   num_clip=cfg.DATASET.NUM_CLIP,
-                                   pretrain=cfg.MODEL.PRETRAIN,
-                                   dropout=cfg.TRAIN.DROPOUT).to(device)
+    model = Align(num_class=cfg.DATASET.NUM_CLASS,
+                  dim_size=cfg.MODEL.DIM_EMBEDDING,
+                  num_clip=cfg.DATASET.NUM_CLIP,
+                  pretrain=cfg.MODEL.PRETRAIN,
+                  dropout=cfg.TRAIN.DROPOUT).to(device)
     
     if args.model_path == None:
         model_path = os.path.join(args.root_path, 'save_models')
@@ -124,7 +156,7 @@ def eval():
             
             checkpoint = torch.load(current_model_path)
             model.load_state_dict(checkpoint['model_state_dict'], strict=True)
-            auc, wdr = eval_one_model(model)
+            auc, wdr = eval_one_model(model, args.dist)
             logger.info('Model is %s, AUC is %.4f, wdr is %.4f' % ('Epoch ' + str(current_epoch), auc, wdr))
 
             if auc > best_auc:
@@ -142,7 +174,9 @@ def eval():
         logger.info('To evaluate 1 models in %s' % (model_path))
         checkpoint = torch.load(model_path)
         model.load_state_dict(checkpoint['model_state_dict'], strict=True)
-        eval_one_model(model)
+        auc, wdr = eval_one_model(model, args.dist)
+        logger.info('Model is %s, AUC is %.4f' % (model_path, auc))
+
     else:
         logger.info('Wrong model path: %s' % model_path)
         exit(-1)
@@ -165,13 +199,14 @@ def parse_args():
     parser.add_argument('--model_path', default=None, help='path to load one model')
     parser.add_argument('--log_name', default='eval_log', help='log name')
     parser.add_argument('--start_epoch', default=1, type=int, help='index of the first evaluated epoch while evaluating epochs')
+    parser.add_argument('--dist', default='NormL2')
 
     args = parser.parse_args([
-        '--config', 'configs/eval_elastic_matching_config.yml',
-        '--root_path', 'train_logs/csv_logs/learnStep_Transformer',
-        # '--model_path', 'train_logs/csv_logs/align_adaK/best_model.tar',
-        '--model_path', 'train_logs/csv_logs/learnStep_Transformer/save_models/epoch_37.tar',
-        # '--start_epoch', '1'
+        '--config', 'configs/eval_novel_config.yml',
+        '--root_path', 'train_logs/csv_logs/baseline',
+        # '--model_path', 'train_logs/csv_logs/ablation_step_12/best_model.tar',
+        '--dist', 'cross',
+        '--start_epoch', '1'
     ])
 
     return args
